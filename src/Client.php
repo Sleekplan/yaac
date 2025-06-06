@@ -346,20 +346,40 @@ class Client
      */
     public function getAccount(): Account
     {
-        $response = $this->request(
+        // Step 1: Discover existing account
+        $discoveryResponse = $this->request(
             $this->getUrl(self::DIRECTORY_NEW_ACCOUNT),
-            $this->signPayloadJWK(
-                [
-                    'onlyReturnExisting' => true,
-                ],
-                $this->getUrl(self::DIRECTORY_NEW_ACCOUNT)
-            )
+            $this->signPayloadJWK([
+                'onlyReturnExisting' => true,
+            ], $this->getUrl(self::DIRECTORY_NEW_ACCOUNT))
         );
 
-        $data = json_decode((string)$response->getBody(), true);
-        $accountURL = $response->getHeaderLine('Location');
-        $date = (new \DateTime())->setTimestamp(strtotime($data['createdAt']));
-        return new Account($data['contact'], $date, ($data['status'] == 'valid'), $data['initialIp'] ?? '', $accountURL);
+        // Store the account URL from Location header (this is the KID)
+        $accountURL = $discoveryResponse->getHeaderLine('Location');
+
+        // Bootstrap the Account object early, just with the URL
+        $this->account = new Account([], new \DateTime(), false, '', $accountURL);
+
+        // Step 2: Authenticated POST-as-GET using signPayloadKid (now KID is known)
+        $accountResponse = $this->request(
+            $accountURL,
+            $this->signPayloadKid(null, $accountURL)
+        );
+
+        $data = json_decode((string)$accountResponse->getBody(), true);
+
+        // Step 3: Populate the Account object with full data
+        $createdAt = isset($data['createdAt']) ? (new \DateTime())->setTimestamp(strtotime($data['createdAt'])) : new \DateTime();
+
+        $this->account = new Account(
+            $data['contact'] ?? [],
+            $createdAt,
+            ($data['status'] ?? '') === 'valid',
+            $data['initialIp'] ?? '',
+            $accountURL
+        );
+
+        return $this->account;
     }
 
     /**
